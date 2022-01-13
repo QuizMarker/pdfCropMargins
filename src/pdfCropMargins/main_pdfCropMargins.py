@@ -49,6 +49,7 @@ Source code site: https://github.com/abarker/pdfCropMargins
 from __future__ import print_function, division, absolute_import
 import sys
 import os
+import io
 import shutil
 import time
 try:
@@ -839,23 +840,29 @@ def process_command_line_arguments(parsed_args):
     input_doc_path = args.pdf_input_doc[0]
     input_doc_path = ex.get_expanded_path(input_doc_path) # Expand vars and user.
     input_doc_path = ex.glob_pathname(input_doc_path, exact_num_args=1)[0]
-    if not input_doc_path.endswith((".pdf",".PDF")):
-        print("\nWarning in pdfCropMargins: The file extension is neither '.pdf'"
-              "\nnor '.PDF'; continuing anyway.", file=sys.stderr)
-    if args.verbose:
-        print("\nThe input document's filename is:\n   ", input_doc_path)
-    if not os.path.isfile(input_doc_path):
-        print("\nError in pdfCropMargins: The specified input file\n   "
-              + input_doc_path + "\nis not a file or does not exist.",
-              file=sys.stderr)
-        ex.cleanup_and_exit(1)
+    if input_doc_path == "-":
+        print("\nUse stdin as input file")
+    else:
+        if not input_doc_path.endswith((".pdf",".PDF")):
+            print("\nWarning in pdfCropMargins: The file extension is neither '.pdf'"
+                "\nnor '.PDF'; continuing anyway.", file=sys.stderr)
+        if args.verbose:
+            print("\nThe input document's filename is:\n   ", input_doc_path)
+        if not os.path.isfile(input_doc_path):
+            print("\nError in pdfCropMargins: The specified input file\n   "
+                + input_doc_path + "\nis not a file or does not exist.",
+                file=sys.stderr)
+            ex.cleanup_and_exit(1)
 
     if not args.outfile and args.verbose:
         print("\nUsing the default-generated output filename.")
 
     output_doc_path = generate_output_filepath(input_doc_path)
     if args.verbose:
-        print("\nThe output document's filename will be:\n   ", output_doc_path)
+        if output_doc_path == "-":
+            print("\nWrite output to stdout")
+        else:
+            print("\nThe output document's filename will be:\n   ", output_doc_path)
 
     if os.path.lexists(output_doc_path) and args.noclobber:
         # Note lexists above, don't overwrite broken symbolic links, either.
@@ -863,8 +870,9 @@ def process_command_line_arguments(parsed_args):
               "\nfile with filename:\n   ", output_doc_path, file=sys.stderr)
         ex.cleanup_and_exit(1)
 
-    if os.path.lexists(output_doc_path) and ex.samefile(input_doc_path,
-                                                                output_doc_path):
+    if os.path.lexists(output_doc_path) \
+        and ex.samefile(input_doc_path, output_doc_path) \
+        and input_doc_path != "-":
         print("\nError in pdfCropMargins: The input file is the same as"
               "\nthe output file.\n", file=sys.stderr)
         ex.cleanup_and_exit(1)
@@ -1051,7 +1059,10 @@ def process_pdf_file(input_doc_fname, fixed_input_doc_fname, output_doc_fname,
 
     # Open the input file object.
     try:
-        fixed_input_doc_file_object = open(fixed_input_doc_fname, "rb")
+        if fixed_input_doc_fname == "-":
+            fixed_input_doc_file_object = io.BytesIO(sys.stdin.buffer.read())
+        else:
+            fixed_input_doc_file_object = open(fixed_input_doc_fname, "rb")
     except IOError:
         print("Error in pdfCropMargins: Could not open output document with "
               "filename '{}'".format(fixed_input_doc_fname))
@@ -1281,7 +1292,10 @@ def process_pdf_file(input_doc_fname, fixed_input_doc_fname, output_doc_fname,
         print("\nWriting the cropped PDF file.")
 
     try:
-        output_doc_stream = open(output_doc_fname, "wb")
+        if output_doc_fname == "-":
+            output_doc_stream = sys.stdout.buffer
+        else:
+            output_doc_stream = open(output_doc_fname, "wb")
     except IOError:
         print("Error in pdfCropMargins: Could not open output document with "
               "filename '{}'".format(output_doc_fname))
