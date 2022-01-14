@@ -177,3 +177,14 @@ def crop(argv_list=None, quiet=False, string_io=False):
     finally: # In case race conditions prevent execution of the context manager __exit__.
         uninterrupted_remove_program_temp_directory()
 
+
+def crop_2(argv_list=None, input_data=None):
+    from .external_program_calls import (create_temporary_directory,
+                                         uninterrupted_remove_program_temp_directory)
+    from .main_pdfCropMargins import main_crop_2
+    try:
+        with create_temporary_directory():
+            return main_crop_2(argv_list, input_data)
+
+    finally: # In case race conditions prevent execution of the context manager __exit__.
+        uninterrupted_remove_program_temp_directory()

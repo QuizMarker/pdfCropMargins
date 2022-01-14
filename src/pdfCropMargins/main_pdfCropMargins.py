@@ -841,7 +841,8 @@ def process_command_line_arguments(parsed_args):
     input_doc_path = ex.get_expanded_path(input_doc_path) # Expand vars and user.
     input_doc_path = ex.glob_pathname(input_doc_path, exact_num_args=1)[0]
     if input_doc_path == "-":
-        print("\nUse stdin as input file")
+        if args.verbose:
+            print("\nUse stdin as input file")
     else:
         if not input_doc_path.endswith((".pdf",".PDF")):
             print("\nWarning in pdfCropMargins: The file extension is neither '.pdf'"
@@ -1453,3 +1454,287 @@ def main_crop(argv_list=None):
         process_pdf_file(input_doc_fname, fixed_input_doc_fname, output_doc_fname)
         handle_options_on_cropped_file(input_doc_fname, output_doc_fname)
 
+
+
+
+##############################################################################
+#
+# Functions implementing the major operations.
+#
+##############################################################################
+
+def process_pdf_file_2(input_doc_fname, fixed_input_doc_fname, output_doc_fname,
+                     bounding_box_list=None, input_data=None):
+    """This function does the real work.  It is called by `main()` in
+    `pdfCropMargins.py`, which just handles catching exceptions and cleaning
+    up.  It returns the name of the modified file that was written to disk.
+
+    If a bounding box list is passed in then the calculation is skipped and
+    that list is used.
+
+    Returns the bounding box list."""
+    ##
+    ## Open the input document in a PdfFileReader object.  Due to an apparent bug
+    ## in pyPdf we open two PdfFileReader objects for the file.  The time required
+    ## should still be small relative to finding the bounding boxes of pages.  The bug
+    ## is that writing a PdfFileWriter tends to hang on certain files if 1) pages from
+    ## the same PdfFileReader are shared between two PdfFileWriter objects, or 2)
+    ## the PdfFileWriter is written, the pages are modified, and there is an attempt
+    ## to write the same PdfFileWriter to a different file.
+    ##
+
+    # Open the input file object.
+    try:
+        if fixed_input_doc_fname == "-":
+            fixed_input_doc_file_object = io.BytesIO(input_data)
+        else:
+            fixed_input_doc_file_object = open(fixed_input_doc_fname, "rb")
+    except IOError:
+        print("Error in pdfCropMargins: Could not open output document with "
+              "filename '{}'".format(fixed_input_doc_fname))
+        ex.cleanup_and_exit(1)
+
+    try:
+        strict_mode = False
+        input_doc = PdfFileReader(fixed_input_doc_file_object, strict=strict_mode)
+        tmp_input_doc = PdfFileReader(fixed_input_doc_file_object, strict=strict_mode)
+    except (KeyboardInterrupt, EOFError):
+        raise
+    except Exception as e: # PyPDF2 can raise various, catch the rest here.
+        print("\nError in pdfCropMargins: The PyPDF2 module failed in an"
+              "\nattempt to read this input file:\n   {}\n"
+              "\nIs the file a PDF file?  If so then it may be corrupted."
+              "\nIf you have Ghostscript installed you can attempt to fix"
+              "\nthe document by using the pdfCropMargins option '--gsFix'"
+              "\n(assuming you are not using that option already).  That option"
+              "\ncan also convert some PostScript files to a readable format."
+              "\n\nThe error message was:\n   {}".format(fixed_input_doc_fname, e),
+              file=sys.stderr)
+        ex.cleanup_and_exit(1)
+
+    ##
+    ## See if the document needs to be decrypted.
+    ##
+
+    if args.password:
+        try:
+            input_doc.decrypt(args.password)
+            tmp_input_doc.decrypt(args.password)
+        except KeyError:
+            print("\nDecrypting with the password from the '--password' option"
+                  "\nfailed.", file=sys.stderr)
+            ex.cleanup_and_exit(1)
+    else: # Try decrypting with an empty password.
+        try:
+            input_doc.decrypt("")
+            tmp_input_doc.decrypt("")
+        except KeyError:
+            pass # Document apparently wasn't encrypted with an empty password.
+
+    ##
+    ## Print out some data and metadata in verbose mode.
+    ##
+
+    try: # Note this is after decryption.
+        input_doc_num_pages = input_doc.getNumPages() # Can raise PdfReadError.
+    except PdfReadError as e:
+        print("\nError in pdfCropMargins: The PyPDF2 module failed with a"
+              "\nPdfReadError in an attempt get the number of pages in input file:\n   {}\n"
+              "\nIs the file a PDF file?  If so then it may be corrupted."
+              "\nIf you have Ghostscript installed you can attempt to fix"
+              "\nthe document by using the pdfCropMargins option '--gsFix'"
+              "\n(assuming you are not using that option already).  That option"
+              "\ncan also convert some PostScript files to a readable format."
+              "\n\nThe error message was:\n   {}".format(fixed_input_doc_fname, e),
+              file=sys.stderr)
+        ex.cleanup_and_exit(1)
+
+    if args.verbose:
+        print("\nThe input document has {} pages.".format(input_doc_num_pages))
+
+    try: # This is needed because the call sometimes just raises an error.
+        metadata_info = input_doc.getDocumentInfo()
+    except:
+        print("\nWarning: Document metadata could not be read.", file=sys.stderr)
+        metadata_info = None
+
+    ##
+    ## Now compute the set containing the pyPdf page number of all the pages
+    ## which the user has selected for cropping from the command line.  Most
+    ## calculations are still carried-out for all the pages in the document.
+    ## (There are a few optimizations for expensive operations like finding
+    ## bounding boxes; the rest is negligible).  This keeps the correspondence
+    ## between page numbers and the positions of boxes in the box lists.  The
+    ## function `apply_crop_list` then just ignores the cropping information
+    ## for any pages which were not selected.
+    ##
+
+    all_page_nums = set(range(0, input_doc_num_pages))
+    if args.pages:
+        try:
+            page_nums_to_crop = parse_page_range_specifiers(args.pages, all_page_nums)
+        except ValueError:
+            print(
+                "\nError in pdfCropMargins: The page range specified on the command",
+                "\nline contains a non-integer value or otherwise cannot be parsed.",
+                file=sys.stderr)
+            ex.cleanup_and_exit(1)
+    else:
+        page_nums_to_crop = all_page_nums
+
+    # In verbose mode print out information about the pages to crop.
+    if args.verbose and args.pages:
+        print("\nThese pages of the document will be cropped:", end="")
+        p_num_list = sorted(list(page_nums_to_crop))
+        num_pages_to_crop = len(p_num_list)
+        for i in range(num_pages_to_crop):
+            if i % 10 == 0 and i != num_pages_to_crop - 1:
+                print("\n   ", end="")
+            print("%5d" % (p_num_list[i]+1), " ", end="")
+        print()
+    elif args.verbose:
+        print("\nAll the pages of the document will be cropped.")
+
+    ##
+    ## Get a list with the full-page boxes for each page: (left,bottom,right,top)
+    ## This function also sets the MediaBox and CropBox of the pages to the
+    ## chosen full-page size as a side-effect, saving the old boxes.  Any absolute
+    ## pre-crop is also applied here.
+    ##
+
+    full_page_box_list, rotation_list = get_full_page_box_list_assigning_media_and_crop(
+                                                          input_doc, skip_pre_crop=False)
+    # The below return values aren't used, but the function is called to replicate
+    # its side-effects on `tmp_input_doc`.
+    tmp_full_page_box_list, tmp_rotation_list = get_full_page_box_list_assigning_media_and_crop(
+                                            tmp_input_doc, quiet=True, skip_pre_crop=False)
+
+    ##
+    ## Define a `PdfFileWriter` object and copy `input_doc` info over to it.
+    ##
+
+    output_doc, tmp_output_doc, already_cropped_by_this_program = setup_output_document(
+                                                input_doc, tmp_input_doc, metadata_info)
+
+    ##
+    ## Write out the PDF document again, with the CropBox and MediaBox reset.
+    ## This temp version is ONLY used for calculating the bounding boxes of
+    ## pages.  Note we are writing from `tmp_output_doc` (due to an apparent bug
+    ## discussed above).  After this `tmp_input_doc` and `tmp_output_doc` are no
+    ## longer needed.
+    ##
+
+    if not bounding_box_list and not args.restore:
+        doc_with_crop_and_media_boxes_name = ex.get_temporary_filename(".pdf")
+        with open(doc_with_crop_and_media_boxes_name, "wb"
+                                          ) as doc_with_crop_and_media_boxes_object:
+            if args.verbose:
+                print("\nWriting out the PDF with the CropBox and MediaBox redefined.")
+
+            try:
+                tmp_output_doc.write(doc_with_crop_and_media_boxes_object)
+            except (KeyboardInterrupt, EOFError):
+                raise
+            except: # PyPDF2 can raise various exceptions.
+                print("\nError in pdfCropMargins: The pyPdf program failed in trying to"
+                      "\nwrite out a PDF file of the document.  The document may be"
+                      "\ncorrupted.  If you have Ghostscript, try using the '--gsFix'"
+                      "\noption (assuming you are not already using it).", file=sys.stderr)
+                ex.cleanup_and_exit(1)
+
+    ##
+    ## Calculate the `bounding_box_list` containing tight page bounds for each page.
+    ##
+
+    if not bounding_box_list and not args.restore:
+        bounding_box_list = get_bounding_box_list(doc_with_crop_and_media_boxes_name,
+                input_doc, full_page_box_list, page_nums_to_crop, args, PdfFileWriter)
+        if args.verbose:
+            print("\nThe bounding boxes are:")
+            for pNum, b in enumerate(bounding_box_list):
+                print("\t", pNum+1, "\t", b)
+        os.remove(doc_with_crop_and_media_boxes_name) # No longer needed.
+
+    elif args.verbose and not args.restore:
+        print("\nUsing the bounding box list passed in instead of calculating it.")
+
+    ##
+    ## Calculate the `crop_list` based on the fullpage boxes and the bounding boxes.
+    ##
+
+    if not args.restore:
+        crop_list = calculate_crop_list(full_page_box_list, bounding_box_list,
+                                        rotation_list, page_nums_to_crop)
+    else:
+        crop_list = None # Restore, not needed in this case.
+
+    ##
+    ## Apply the calculated crops to the pages of the PdfFileReader input_doc.
+    ## These pages are copied to the PdfFileWriter output_doc.
+    ##
+
+    apply_crop_list(crop_list, input_doc, page_nums_to_crop,
+                                          already_cropped_by_this_program)
+
+    ##
+    ## Write the final PDF out to a file.
+    ##
+
+    if args.verbose:
+        print("\nWriting the cropped PDF file.")
+
+    try:
+        if output_doc_fname == "-":
+            output_doc_stream = io.BytesIO()
+        else:
+            output_doc_stream = open(output_doc_fname, "wb")
+    except IOError:
+        print("Error in pdfCropMargins: Could not open output document with "
+              "filename '{}'".format(output_doc_fname))
+        ex.cleanup_and_exit(1)
+
+    try:
+        output_doc.write(output_doc_stream)
+    except (KeyboardInterrupt, EOFError):
+        raise
+    except: # PyPDF2 can raise various exceptions.
+        try:
+            # We know the write succeeded on tmp_output_doc or we wouldn't be here.
+            # Malformed document catalog info can cause write failures, so get
+            # a new output_doc without that data and try the write again.
+            print("\nWrite failure, trying one more time...", file=sys.stderr)
+            output_doc_stream.close()
+            if output_doc_fname == "-":
+                output_doc_stream = io.BytesIO()
+            else:
+                output_doc_stream = open(output_doc_fname, "wb")
+            output_doc, tmp_output_doc, already_cropped = setup_output_document(
+                    input_doc, tmp_input_doc, metadata_info, copy_document_catalog=False)
+            output_doc.write(output_doc_stream)
+            print("\nWarning: Document catalog data caused a write failure.  A retry"
+                  "\nwithout that data succeeded.  No document catalog information was"
+                  "\ncopied to the cropped output file.  Try fixing the PDF file.  If"
+                  "\nyou have ghostscript installed, run pdfCropMargins with the '--gsFix'"
+                  "\noption.  You can also try blacklisting some of the document catalog"
+                  "\nitems using the '--dcb' option.", file=sys.stderr)
+        except (KeyboardInterrupt, EOFError):
+            raise
+        except: # Give up... PyPDF2 can raise many errors for many reasons.
+            print("\nError in pdfCropMargins: The pyPdf program failed in trying to"
+                  "\nwrite out a PDF file of the document.  The document may be"
+                  "\ncorrupted.  If you have Ghostscript, try using the '--gsFix'"
+                  "\noption (assuming you are not already using it).", file=sys.stderr)
+            ex.cleanup_and_exit(1)
+
+    output_data = output_doc_stream.getvalue()
+    output_doc_stream.close()
+
+    # We're finished with this open file; close it and let temp dir removal delete it.
+    fixed_input_doc_file_object.close()
+    return output_data
+
+def main_crop_2(argv_list=None,input_data=None):
+    parsed_args = parse_command_line_arguments(cmd_parser, argv_list=argv_list)
+    # Process some of the command-line arguments (also sets `args` globally).
+    input_doc_fname, fixed_input_doc_fname, output_doc_fname = (process_command_line_arguments(parsed_args))
+    return process_pdf_file_2(input_doc_fname, fixed_input_doc_fname, output_doc_fname, input_data=input_data)
