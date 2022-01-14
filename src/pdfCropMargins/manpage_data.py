@@ -825,3 +825,5 @@ cmd_parser.add_argument("-wcdf", "--writeCropDataToFile", type=str,
    that is passed in and exit.  Mostly used for automated testing and
    debugging.^^n""")
 
+cmd_parser.add_argument("-png", "--writePng", type=str, default=None)
+

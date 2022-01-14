@@ -76,6 +76,7 @@ except ImportError:
     ex.cleanup_and_exit(1)
 
 from .calculate_bounding_boxes import get_bounding_box_list
+from . import pymupdf_routines
 
 ##
 ## Some data used by the program.
@@ -1439,3 +1440,10 @@ def main_crop(argv_list=None):
         process_pdf_file(input_doc_fname, fixed_input_doc_fname, output_doc_fname)
         handle_options_on_cropped_file(input_doc_fname, output_doc_fname)
 
+        if args.writePng is not None:
+            document_pages = pymupdf_routines.MuPdfDocument(args)
+            num_pages = document_pages.open_document(output_doc_fname)
+            if num_pages > 0:
+                png_image = document_pages.get_png_page(0)
+                with open(args.writePng,'wb' ) as file:
+                    file.write(png_image)
