@@ -987,25 +987,6 @@ def process_pdf_file(input_doc_fname, fixed_input_doc_fname, output_doc_fname,
         ex.cleanup_and_exit(1)
 
     ##
-    ## See if the document needs to be decrypted.
-    ##
-
-    if args.password:
-        try:
-            input_doc.decrypt(args.password)
-            tmp_input_doc.decrypt(args.password)
-        except KeyError:
-            print("\nDecrypting with the password from the '--password' option"
-                  "\nfailed.", file=sys.stderr)
-            ex.cleanup_and_exit(1)
-    else: # Try decrypting with an empty password.
-        try:
-            input_doc.decrypt("")
-            tmp_input_doc.decrypt("")
-        except KeyError:
-            pass # Document apparently wasn't encrypted with an empty password.
-
-    ##
     ## Print out some data and metadata in verbose mode.
     ##
 
